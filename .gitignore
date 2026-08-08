@@ -1,0 +1,17 @@
+# Data and checkpoints
+oxford-iiit-pet/
+checkpoints/
+
+# Python environment
+.venv/
+
+# Bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
