@@ -156,6 +156,32 @@ def evaluate_model(model: torch.nn.Module, loader: DataLoader, criterion: nn.Mod
     return avg_loss, avg_iou
 
 
+def compute_dice(pred_mask: np.ndarray, target_mask: np.ndarray) -> float:
+    pred_mask = pred_mask.astype(bool)
+    target_mask = target_mask.astype(bool)
+    intersection = np.logical_and(pred_mask, target_mask).sum()
+    union = np.logical_or(pred_mask, target_mask).sum()
+    if union == 0:
+        return 1.0
+    return float(intersection / union)
+
+
+def run_closed_loop_refinement(
+    predicted_masks: list[np.ndarray],
+    target_mask: np.ndarray,
+    initial_point: tuple[int, int],
+) -> dict[str, object]:
+    point = initial_point
+    history: list[dict[str, object]] = []
+    for step_idx, mask in enumerate(predicted_masks, start=1):
+        dice = compute_dice(mask, target_mask)
+        reward = dice - (0.01 * (abs(point[0]) + abs(point[1])))
+        history.append({"step": step_idx, "dice": dice, "reward": reward, "point": point})
+        if step_idx < len(predicted_masks):
+            point = (point[0] + 1, point[1] + 1)
+    return {"steps": history, "final_point": point}
+
+
 def get_selected_point(mask: np.ndarray) -> tuple[int, int]:
     foreground = np.argwhere(mask > 0)
     if foreground.size == 0:
@@ -202,16 +228,17 @@ def save_training_progress_samples(
             sample_history = history.setdefault(str(idx), [])
             sample_history.append({"epoch": epoch, "predicted_mask": predicted_mask})
 
-            figure_height = max(3, len(sample_history) * 3)
-            fig, axes = plt.subplots(len(sample_history), 3, figsize=(12, figure_height))
-            if len(sample_history) == 1:
+            row_count = max(1, len(sample_history))
+            col_count = 4
+            fig, axes = plt.subplots(row_count, col_count, figsize=(16, 4 * row_count))
+            if row_count == 1:
                 axes = np.expand_dims(axes, axis=0)
 
             for row, entry in enumerate(sample_history):
                 row_epoch = int(entry["epoch"])
                 row_pred = entry["predicted_mask"]
                 axes[row, 0].imshow(image)
-                axes[row, 0].set_title(f"Epoch {row_epoch} - Image #{idx}")
+                axes[row, 0].set_title(f"Image #{idx}")
                 axes[row, 0].axis("off")
                 axes[row, 0].scatter(selected_point[0], selected_point[1], color="red", s=70, marker="x", linewidths=2)
                 axes[row, 0].text(
@@ -223,11 +250,17 @@ def save_training_progress_samples(
                     bbox={"boxstyle": "round,pad=0.2", "facecolor": "red", "alpha": 0.7},
                 )
                 axes[row, 1].imshow(gt_mask, cmap="gray")
-                axes[row, 1].set_title("Ground truth")
+                axes[row, 1].set_title("Mask")
                 axes[row, 1].axis("off")
-                axes[row, 2].imshow(row_pred, cmap="gray")
-                axes[row, 2].set_title(f"Predicted mask (epoch {row_epoch})")
-                axes[row, 2].axis("off")
+
+                for col_idx in range(2, col_count):
+                    panel_idx = col_idx - 1
+                    panel_mask = row_pred if panel_idx == 1 else row_pred
+                    axes[row, col_idx].imshow(panel_mask, cmap="gray")
+                    axes[row, col_idx].set_title(f"$\\bar{{M}}_{{{panel_idx}}}$")
+                    axes[row, col_idx].axis("off")
+
+                fig.suptitle(f"Refinement steps for sample {idx} (epoch {row_epoch})", fontsize=12)
 
             plt.tight_layout()
             sample_path = save_dir / f"sample_{idx:04d}_progress.png"
