@@ -46,7 +46,7 @@ def visualize_samples(
     device: str,
     num_samples: int = 3,
     start_index: int = 0,
-    save_path: Optional[str] = None,
+    save_path: str = "visualization.png",
 ) -> None:
     root_path = Path(root).expanduser().resolve()
     dataset = load_oxford_pet_dataset(
@@ -93,10 +93,12 @@ def visualize_samples(
             axes[row, 2].axis("off")
 
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150)
-        print(f"Saved visualization to {save_path}")
-    plt.show()
+    plt.savefig(save_path, dpi=150)
+    print(f"Saved visualization to {save_path}")
+    try:
+        plt.show()
+    except Exception:
+        pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=get_default_device(), help="Device for model inference.")
     parser.add_argument("--num-samples", type=int, default=3, help="Number of samples to visualize.")
     parser.add_argument("--start-index", type=int, default=0, help="Start index for the dataset samples.")
-    parser.add_argument("--save-path", type=str, default="", help="Optional path to save the visualization figure.")
+    parser.add_argument("--save-path", type=str, default="visualization.png", help="Path to save the visualization figure.")
     return parser.parse_args()
 
 
