@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -153,7 +155,50 @@ def evaluate_model(model: torch.nn.Module, loader: DataLoader, criterion: nn.Mod
     return avg_loss, avg_iou
 
 
-def run_train(root: str, download: bool, checkpoint: str, model_checkpoint: str, device: str) -> None:
+def save_training_progress_samples(
+    model: torch.nn.Module,
+    root: str,
+    epoch: int,
+    sample_indices: list[int],
+    device: str,
+    output_dir: str,
+) -> None:
+    model.eval()
+    dataset = load_oxford_pet_dataset(root=root, download=False)
+    save_dir = Path(output_dir).expanduser().resolve() / f"epoch_{epoch:02d}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    transform = build_image_transform()
+
+    with torch.no_grad():
+        for idx in sample_indices:
+            if idx >= len(dataset):
+                break
+            image, mask = dataset[idx]
+            input_tensor = transform(image).unsqueeze(0).to(device)
+            logits = model(input_tensor)
+            probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
+            predicted_mask = (probs > 0.5).astype(np.uint8)
+            gt_mask = (np.array(mask) == 1).astype(np.uint8)
+
+            fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+            ax[0].imshow(image)
+            ax[0].set_title(f"Image #{idx}")
+            ax[0].axis("off")
+            ax[1].imshow(gt_mask, cmap="gray")
+            ax[1].set_title("Ground truth")
+            ax[1].axis("off")
+            ax[2].imshow(predicted_mask, cmap="gray")
+            ax[2].set_title("Predicted mask")
+            ax[2].axis("off")
+            plt.tight_layout()
+
+            sample_path = save_dir / f"epoch{epoch:02d}_sample{idx:04d}.png"
+            fig.savefig(sample_path, dpi=150)
+            plt.close(fig)
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Saved epoch {epoch} sample {idx} to {sample_path}")
+
+
+def run_train(root: str, download: bool, checkpoint: str, model_checkpoint: str, device: str, progress_dir: str = "training_progress") -> None:
     train_loader, val_loader = get_data_loaders(root=root, download=download, device=device)
     model = build_model(device)
     pos_weight = torch.tensor([5.0], device=device)
@@ -165,7 +210,15 @@ def run_train(root: str, download: bool, checkpoint: str, model_checkpoint: str,
     for epoch in range(1, NUM_EPOCHS + 1):
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_iou = evaluate_model(model, val_loader, criterion, device)
-        print(f"Epoch {epoch}/{NUM_EPOCHS} - train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_iou={val_iou:.4f}")
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Epoch {epoch}/{NUM_EPOCHS} - train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_iou={val_iou:.4f}")
+        save_training_progress_samples(
+            model=model,
+            root=root,
+            epoch=epoch,
+            sample_indices=[0, 1, 2],
+            device=device,
+            output_dir=progress_dir,
+        )
 
     checkpoint_path = Path(model_checkpoint)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,6 +252,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-checkpoint", type=str, default=MODEL_CHECKPOINT, help="Path to save or load the segmentation model weights.")
     parser.add_argument("--download", action="store_true", help="Download the Oxford-IIIT Pet dataset if missing.")
     parser.add_argument("--device", type=str, default=get_default_device())
+    parser.add_argument("--progress-dir", type=str, default="training_progress", help="Directory to save epoch-wise sample prediction snapshots during training.")
     return parser.parse_args()
 
 
@@ -211,7 +265,14 @@ def main() -> None:
         return
 
     if args.stage == "train":
-        run_train(str(root_path), args.download, args.checkpoint, args.model_checkpoint, args.device)
+        run_train(
+            str(root_path),
+            args.download,
+            args.checkpoint,
+            args.model_checkpoint,
+            args.device,
+            progress_dir=args.progress_dir,
+        )
     elif args.stage == "eval":
         run_eval(str(root_path), args.download, args.model_checkpoint, args.device)
 
