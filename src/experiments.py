@@ -112,7 +112,8 @@ def get_data_loaders(root: str, download: bool, batch_size: int = BATCH_SIZE):
 def train_epoch(model: torch.nn.Module, loader: DataLoader, criterion: nn.Module, optimizer: torch.optim.Optimizer, device: str) -> float:
     model.train()
     total_loss = 0.0
-    for images, masks in loader:
+    batch_count = len(loader)
+    for batch_idx, (images, masks) in enumerate(loader, start=1):
         images = images.to(device)
         masks = masks.to(device)
         predictions = model(images)
@@ -121,6 +122,9 @@ def train_epoch(model: torch.nn.Module, loader: DataLoader, criterion: nn.Module
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * images.size(0)
+
+        if batch_idx % 10 == 0 or batch_idx == batch_count:
+            print(f"    batch {batch_idx}/{batch_count} - loss={loss.item():.4f}")
     return total_loss / len(loader.dataset)
 
 
