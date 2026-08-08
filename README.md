@@ -102,6 +102,16 @@ python -m src.experiments --stage eval --root . --model-checkpoint checkpoints/s
 python -m src.visualize --root . --model-checkpoint checkpoints/simple_segmentation.pth --num-samples 3
 ```
 
+### Visualize refinement steps
+
+Train the model while saving per-step refinement snapshots:
+
+```bash
+python -m src.experiments --stage train --root . --download --model-checkpoint checkpoints/simple_segmentation.pth --progress-dir training_progress
+```
+
+This will save one composite image per sample in the `training_progress/` directory, showing the original image, the mask, and the intermediate refinement outputs for each step (for example, `sample_0000_progress.png`).
+
 ## Notes
 
 - The `src` package is import-safe and focuses on a clean experiment scaffold.
