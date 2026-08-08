@@ -45,6 +45,39 @@ pip install -r requirements.txt
 - `oxford-iiit-pet/`
 - `checkpoints/`
 
+### Download the Oxford-IIIT Pet dataset
+
+You can let the script download the dataset for you, or download it manually and place it into `oxford-iiit-pet/`.
+
+To download automatically via the script:
+
+```bash
+python -m src.experiments --stage sanity --root . --download
+```
+
+This will download the dataset into the local project root under `oxford-iiit-pet/`.
+
+If you want to download manually, place the extracted dataset files into `oxford-iiit-pet/`.
+
+### Download the SAM checkpoint
+
+This repository does not include the `.pth` checkpoint file. You should download a SAM checkpoint such as `sam_vit_b_01ec64.pth` from the official source you have access to, then save it into the `checkpoints/` directory.
+
+Example:
+
+```bash
+mkdir -p checkpoints
+curl -L -o checkpoints/sam_vit_b_01ec64.pth \
+  https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+```
+
+If you prefer `wget`:
+
+```bash
+wget -O checkpoints/sam_vit_b_01ec64.pth \
+  https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+```
+
 4. Run a sanity stage:
 
 ```bash
