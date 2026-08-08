@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision.transforms import Compose, Normalize, Resize, ToTensor
 
 from src.models import SimpleSegmentationNet
+from src.models import PointPredictor
 from src.oxford_pet_sam import (
     build_sam_predictor,
     get_mask_from_target,
@@ -488,6 +489,110 @@ def run_point_reward_landscape(
     print(f"Saved landscape summary to {csv_path}")
 
 
+def train_one_shot_prompt(
+    root: str,
+    sam_checkpoint: Optional[str],
+    device: str,
+    output_dir: str = "one_shot_outputs",
+    epochs: int = 1,
+    lr: float = 1e-4,
+    num_samples: int = 200,
+    sigma: float = 10.0,
+) -> None:
+    """Train a policy πθ(I) -> p using REINFORCE with reward = Dice(SAM(I,p), M).
+
+    Also trains a supervised baseline to regress GT centroid for comparison.
+    """
+    out_path = Path(output_dir).expanduser().resolve()
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    raw_dataset = load_oxford_pet_dataset(root=root, download=False, transform=None, target_transform=None)
+    total = min(num_samples, len(raw_dataset))
+
+    # SAM predictor (may be None -> deterministic fallback)
+    predictor = None
+    if sam_checkpoint:
+        try:
+            predictor = build_sam_predictor(checkpoint_path=sam_checkpoint, device=device, download=False)
+        except Exception as exc:
+            print(f"Could not build SAM predictor: {exc}; using deterministic fallback.")
+            predictor = None
+
+    device_t = device
+    model = PointPredictor(pretrained=False).to(device_t)
+    sup_model = PointPredictor(pretrained=False).to(device_t)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    sup_opt = torch.optim.Adam(sup_model.parameters(), lr=lr)
+
+    transform = build_image_transform()
+
+    # running baseline for REINFORCE
+    running_baseline = 0.0
+    alpha = 0.01
+
+    summary = []
+    for epoch in range(1, epochs + 1):
+        indices = np.random.permutation(total)
+        for idx in indices:
+            pil_image, pil_mask = raw_dataset[int(idx)]
+            input_tensor = transform(pil_image).unsqueeze(0).to(device_t)
+
+            # policy forward
+            model.train()
+            coords_norm = model(input_tensor)[0]  # [0,1]
+            coords_px = coords_norm * torch.tensor([IMAGE_SIZE[1], IMAGE_SIZE[0]], device=device_t)
+
+            # sample with normal noise
+            dist = torch.distributions.Normal(coords_px, sigma)
+            sample_pt = dist.sample()
+            logp = dist.log_prob(sample_pt).sum()
+            sx = int(torch.clamp(sample_pt[0], 0, IMAGE_SIZE[1] - 1).item())
+            sy = int(torch.clamp(sample_pt[1], 0, IMAGE_SIZE[0] - 1).item())
+
+            # reward via SAM or deterministic fallback
+            pmask = generate_sam_mask(predictor, pil_image, (sx, sy))
+            target_mask = (np.array(pil_mask) == 1).astype(np.uint8)
+            if target_mask.shape != (IMAGE_SIZE[0], IMAGE_SIZE[1]):
+                target_mask = np.array(Image.fromarray(target_mask).resize(IMAGE_SIZE, Image.NEAREST)) > 0
+            r = compute_dice(pmask, target_mask)
+
+            # REINFORCE loss
+            advantage = r - running_baseline
+            loss = -logp * advantage
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+            running_baseline = (1 - alpha) * running_baseline + alpha * r
+
+            # supervised baseline step: regress to oracle centroid
+            gt_centroid = get_selected_point(target_mask)
+            gt_norm = torch.tensor([gt_centroid[0] / IMAGE_SIZE[1], gt_centroid[1] / IMAGE_SIZE[0]], dtype=torch.float32, device=device_t)
+            sup_model.train()
+            pred_sup = sup_model(input_tensor)[0]
+            sup_loss = nn.functional.mse_loss(pred_sup, gt_norm)
+            sup_opt.zero_grad()
+            sup_loss.backward()
+            sup_opt.step()
+
+            summary.append({"idx": idx, "r": float(r), "adv": float(advantage)})
+
+        print(f"Epoch {epoch}/{epochs} finished; running_baseline={running_baseline:.4f}")
+
+    # save models and summary
+    torch.save(model.state_dict(), out_path / "one_shot_policy.pth")
+    torch.save(sup_model.state_dict(), out_path / "one_shot_supervised.pth")
+    import csv
+    csv_path = out_path / "one_shot_summary.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["idx", "r", "adv"])
+        writer.writeheader()
+        for row in summary:
+            writer.writerow(row)
+
+    print(f"Saved one-shot models and summary to {out_path}")
+
+
 def get_selected_point(mask: np.ndarray) -> tuple[int, int]:
     foreground = np.argwhere(mask > 0)
     if foreground.size == 0:
@@ -630,7 +735,7 @@ def run_eval(root: str, download: bool, model_checkpoint: str, device: str) -> N
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Oxford Pet + SAM experiment scaffold.")
-    parser.add_argument("--stage", choices=["sanity", "train", "eval", "refine", "landscape"], required=True)
+    parser.add_argument("--stage", choices=["sanity", "train", "eval", "refine", "landscape", "one-shot"], required=True)
     parser.add_argument("--root", type=str, required=True, help="Project root containing the dataset directories.")
     parser.add_argument("--checkpoint", type=str, default="", help="Path to a SAM checkpoint for sanity or inference.")
     parser.add_argument("--model-checkpoint", type=str, default=MODEL_CHECKPOINT, help="Path to save or load the segmentation model weights.")
@@ -640,6 +745,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refine-output-dir", type=str, default="refinement_outputs", help="Directory to save per-step refinement visualizations for T=1,2,3,5.")
     parser.add_argument("--sample-index", type=int, default=0, help="Dataset sample index to use for the refinement inference loop.")
     parser.add_argument("--landscape-samples", type=int, default=20, help="Number of samples to run for the point-reward landscape baseline.")
+    parser.add_argument("--one-shot-epochs", type=int, default=1, help="Number of epochs for one-shot policy training.")
+    parser.add_argument("--one-shot-samples", type=int, default=200, help="Number of samples to use for one-shot training.")
     return parser.parse_args()
 
 
@@ -678,6 +785,15 @@ def main() -> None:
             device=args.device,
             output_dir=args.refine_output_dir,
             num_samples=args.landscape_samples,
+        )
+    elif args.stage == "one-shot":
+        train_one_shot_prompt(
+            root=str(root_path),
+            sam_checkpoint=args.checkpoint or None,
+            device=args.device,
+            output_dir=args.refine_output_dir,
+            epochs=args.one_shot_epochs,
+            num_samples=args.one_shot_samples,
         )
 
 

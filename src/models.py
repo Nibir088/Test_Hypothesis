@@ -67,3 +67,33 @@ class SimpleSegmentationNet(nn.Module):
         features = self.encoder(image)
         mask = self.decoder(features)
         return mask
+
+
+class PointPredictor(nn.Module):
+    """Simple image -> (x,y) predictor. Outputs normalized coords in [0,1]."""
+    def __init__(self, pretrained: bool = True):
+        super().__init__()
+        backbone = models.resnet18(pretrained=pretrained)
+        self.features = nn.Sequential(
+            backbone.conv1,
+            backbone.bn1,
+            backbone.relu,
+            backbone.maxpool,
+            backbone.layer1,
+            backbone.layer2,
+            backbone.layer3,
+            backbone.layer4,
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        f = self.features(x)
+        f = f.flatten(start_dim=1)
+        coords = self.fc(f)
+        coords = torch.sigmoid(coords)
+        return coords
