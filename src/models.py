@@ -61,7 +61,6 @@ class SimpleSegmentationNet(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
             nn.ConvTranspose2d(32, num_classes, kernel_size=2, stride=2),
-            nn.Sigmoid(),
         )
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:

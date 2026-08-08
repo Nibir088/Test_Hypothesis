@@ -39,7 +39,7 @@ def build_image_transform() -> Compose:
 
 def build_mask_transform() -> Compose:
     return Compose([
-        lambda mask: Image.fromarray(np.array(mask)),
+        lambda mask: Image.fromarray((np.array(mask) == 1).astype('uint8') * 255),
         Resize(IMAGE_SIZE, interpolation=Image.NEAREST),
         ToTensor(),
     ])
@@ -143,7 +143,7 @@ def evaluate_model(model: torch.nn.Module, loader: DataLoader, criterion: nn.Mod
             predictions = model(images)
             loss = criterion(predictions, masks)
             total_loss += loss.item() * images.size(0)
-            predicted_mask = (predictions > 0.5).float()
+            predicted_mask = (predictions > 0.0).float()
             intersection = (predicted_mask * masks).sum(dim=(1, 2, 3))
             union = ((predicted_mask + masks) > 0).float().sum(dim=(1, 2, 3))
             total_iou += (intersection / union.clamp(min=1e-6)).sum().item()
@@ -155,7 +155,8 @@ def evaluate_model(model: torch.nn.Module, loader: DataLoader, criterion: nn.Mod
 def run_train(root: str, download: bool, checkpoint: str, model_checkpoint: str, device: str) -> None:
     train_loader, val_loader = get_data_loaders(root=root, download=download, device=device)
     model = build_model(device)
-    criterion = nn.BCELoss()
+    pos_weight = torch.tensor([5.0], device=device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     print(f"Training on device={device} with {len(train_loader.dataset)} train samples and {len(val_loader.dataset)} val samples.")
@@ -184,7 +185,7 @@ def run_eval(root: str, download: bool, model_checkpoint: str, device: str) -> N
     print(f"Loaded model weights from: {checkpoint_path}")
 
     _, val_loader = get_data_loaders(root=root, download=download, device=device)
-    criterion = nn.BCELoss()
+    criterion = nn.BCEWithLogitsLoss()
     val_loss, val_iou = evaluate_model(model, val_loader, criterion, device)
     print(f"Evaluation result - val_loss={val_loss:.4f} val_iou={val_iou:.4f}")
 
