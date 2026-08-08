@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+import torchvision.models as models
 
 
 class PointPromptHead(nn.Module):
@@ -33,19 +34,29 @@ class RefineSegmentationHead(nn.Module):
 
 
 class SimpleSegmentationNet(nn.Module):
-    def __init__(self, num_classes: int = 1):
+    def __init__(self, num_classes: int = 1, pretrained: bool = False):
         super().__init__()
+        backbone = models.resnet18(pretrained=pretrained)
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
+            backbone.conv1,
+            backbone.bn1,
+            backbone.relu,
+            backbone.maxpool,
+            backbone.layer1,
+            backbone.layer2,
+            backbone.layer3,
+            backbone.layer4,
         )
         self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
             nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),

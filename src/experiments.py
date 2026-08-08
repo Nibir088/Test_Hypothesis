@@ -45,19 +45,6 @@ def build_mask_transform() -> Compose:
     ])
 
 
-def prepare_batch(sample: Tuple[Image.Image, Image.Image]) -> tuple[torch.Tensor, torch.Tensor]:
-    image, mask = sample
-    image_tensor = build_image_transform()(image)
-    mask_tensor = build_mask_transform()(mask)
-    mask_tensor = (mask_tensor > 0.5).float()
-    return image_tensor, mask_tensor
-
-
-def collate_batch(batch):
-    images, masks = zip(*(prepare_batch(item) for item in batch))
-    return torch.stack(images), torch.stack(masks)
-
-
 def run_sanity_check(root: str, checkpoint: Optional[str], download: bool) -> None:
     dataset = load_oxford_pet_dataset(root=root, download=download)
     print(f"Loaded Oxford-IIIT Pet dataset with {len(dataset)} samples.")
@@ -81,8 +68,23 @@ def build_model(device: str) -> torch.nn.Module:
     return model.to(device)
 
 
-def get_data_loaders(root: str, download: bool, batch_size: int = BATCH_SIZE):
-    dataset = load_oxford_pet_dataset(root=root, download=download)
+def get_default_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def get_data_loaders(root: str, download: bool, device: str, batch_size: int = BATCH_SIZE, num_workers: int = 4):
+    image_transform = build_image_transform()
+    mask_transform = build_mask_transform()
+    dataset = load_oxford_pet_dataset(
+        root=root,
+        download=download,
+        transform=image_transform,
+        target_transform=mask_transform,
+    )
     total = len(dataset)
     val_size = int(total * 0.2)
     train_size = total - val_size
@@ -92,19 +94,21 @@ def get_data_loaders(root: str, download: bool, batch_size: int = BATCH_SIZE):
         generator=torch.Generator().manual_seed(42),
     )
 
+    pin_memory = device == "cuda"
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=collate_batch,
-        num_workers=0,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        collate_fn=collate_batch,
-        num_workers=0,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     return train_loader, val_loader
 
@@ -149,7 +153,7 @@ def evaluate_model(model: torch.nn.Module, loader: DataLoader, criterion: nn.Mod
 
 
 def run_train(root: str, download: bool, checkpoint: str, model_checkpoint: str, device: str) -> None:
-    train_loader, val_loader = get_data_loaders(root=root, download=download)
+    train_loader, val_loader = get_data_loaders(root=root, download=download, device=device)
     model = build_model(device)
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -179,7 +183,7 @@ def run_eval(root: str, download: bool, model_checkpoint: str, device: str) -> N
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     print(f"Loaded model weights from: {checkpoint_path}")
 
-    _, val_loader = get_data_loaders(root=root, download=download)
+    _, val_loader = get_data_loaders(root=root, download=download, device=device)
     criterion = nn.BCELoss()
     val_loss, val_iou = evaluate_model(model, val_loader, criterion, device)
     print(f"Evaluation result - val_loss={val_loss:.4f} val_iou={val_iou:.4f}")
@@ -192,7 +196,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default="", help="Path to a SAM checkpoint for sanity or inference.")
     parser.add_argument("--model-checkpoint", type=str, default=MODEL_CHECKPOINT, help="Path to save or load the segmentation model weights.")
     parser.add_argument("--download", action="store_true", help="Download the Oxford-IIIT Pet dataset if missing.")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", type=str, default=get_default_device())
     return parser.parse_args()
 
 

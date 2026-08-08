@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import torch
@@ -22,18 +22,25 @@ def load_oxford_pet_dataset(
     split: str = "trainval",
     download: bool = False,
     target_types: Tuple[str, ...] = ("segmentation",),
+    transform: Optional[Callable] = None,
+    target_transform: Optional[Callable] = None,
 ) -> OxfordIIITPet:
     root_path = Path(root).expanduser().resolve()
     if split != "trainval":
         raise ValueError("Oxford-IIIT Pet only supports split='trainval'.")
+
+    if transform is None:
+        transform = lambda img: img.convert("RGB")
+    if target_transform is None:
+        target_transform = lambda mask: Image.fromarray(np.array(mask))
 
     return OxfordIIITPet(
         root=str(root_path),
         split=split,
         target_types=target_types,
         download=download,
-        transform=lambda img: img.convert("RGB"),
-        target_transform=lambda mask: Image.fromarray(np.array(mask)),
+        transform=transform,
+        target_transform=target_transform,
     )
 
 
