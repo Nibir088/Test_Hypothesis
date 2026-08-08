@@ -84,6 +84,24 @@ wget -O checkpoints/sam_vit_b_01ec64.pth \
 python -m src.experiments --stage sanity --root . --checkpoint checkpoints/sam_vit_b_01ec64.pth
 ```
 
+### Train the segmentation model
+
+```bash
+python -m src.experiments --stage train --root . --download
+```
+
+### Evaluate the segmentation model
+
+```bash
+python -m src.experiments --stage eval --root . --model-checkpoint checkpoints/simple_segmentation.pth
+```
+
+### Visualize predictions
+
+```bash
+python -m src.visualize --root . --model-checkpoint checkpoints/simple_segmentation.pth --num-samples 3
+```
+
 ## Notes
 
 - The `src` package is import-safe and focuses on a clean experiment scaffold.
