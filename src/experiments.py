@@ -286,19 +286,20 @@ def run_refinement_inference(
     device: str,
     sample_idx: int = 0,
     output_dir: str = "refinement_outputs",
+    sam_checkpoint: Optional[str] = None,
 ) -> None:
-    checkpoint_path = Path(model_checkpoint).expanduser().resolve()
+    sam_checkpoint_path = Path(sam_checkpoint).expanduser().resolve() if sam_checkpoint else None
     try:
         resolved_checkpoint = resolve_sam_checkpoint(
-            checkpoint_path=str(checkpoint_path) if checkpoint_path.exists() else None,
-            default_checkpoint_path=str(checkpoint_path),
+            checkpoint_path=str(sam_checkpoint_path) if sam_checkpoint_path is not None else None,
+            default_checkpoint_path=None,
             download=True,
         )
-        checkpoint_path = resolved_checkpoint
-        print(f"Using SAM checkpoint at {checkpoint_path}")
+        sam_checkpoint_path = resolved_checkpoint
+        print(f"Using SAM ViT-B checkpoint at {sam_checkpoint_path}")
     except FileNotFoundError as exc:
-        print(f"SAM checkpoint unavailable: {exc}")
-        checkpoint_path = None
+        print(f"No compatible SAM checkpoint found: {exc}. The refinement loop will use a deterministic prompt mask instead.")
+        sam_checkpoint_path = None
 
     dataset = load_oxford_pet_dataset(root=root, download=False)
     image, mask = dataset[sample_idx]
@@ -312,10 +313,10 @@ def run_refinement_inference(
 
     print(f"Running refinement loop for sample {sample_idx} with initial point {initial_point}")
     for max_steps in [1, 2, 3, 5]:
-        if checkpoint_path is not None:
+        if sam_checkpoint_path is not None:
             try:
                 predictor = build_sam_predictor(
-                    checkpoint_path=str(checkpoint_path),
+                    checkpoint_path=str(sam_checkpoint_path),
                     device=device,
                     download=False,
                 )
@@ -534,6 +535,7 @@ def main() -> None:
             device=args.device,
             sample_idx=args.sample_index,
             output_dir=args.refine_output_dir,
+            sam_checkpoint=args.checkpoint or None,
         )
 
 
