@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable, Optional, Tuple
+import urllib.request
 
 import numpy as np
 import torch
@@ -44,10 +45,39 @@ def load_oxford_pet_dataset(
     )
 
 
+DEFAULT_SAM_CHECKPOINT = "checkpoints/sam_vit_b_01ec64.pth"
+DEFAULT_SAM_URL = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+
+
+def resolve_sam_checkpoint(
+    checkpoint_path: Optional[str] = None,
+    default_checkpoint_path: Optional[str] = None,
+    download: bool = True,
+) -> Path:
+    explicit_candidate = Path(checkpoint_path).expanduser().resolve() if checkpoint_path else None
+    default_candidate = Path(default_checkpoint_path or DEFAULT_SAM_CHECKPOINT).expanduser().resolve() if (default_checkpoint_path or DEFAULT_SAM_CHECKPOINT) else None
+
+    for candidate in [explicit_candidate, default_candidate]:
+        if candidate is not None and candidate.exists():
+            return candidate
+
+    download_target = default_candidate or explicit_candidate or Path(DEFAULT_SAM_CHECKPOINT).expanduser().resolve()
+    if download:
+        download_target.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading SAM checkpoint to {download_target}...")
+        urllib.request.urlretrieve(DEFAULT_SAM_URL, str(download_target))
+        if download_target.exists():
+            return download_target
+
+    raise FileNotFoundError(f"SAM checkpoint not found: {download_target}")
+
+
 def build_sam_predictor(
-    checkpoint_path: str,
+    checkpoint_path: Optional[str] = None,
     model_type: str = "vit_b",
     device: Optional[str] = None,
+    default_checkpoint_path: Optional[str] = None,
+    download: bool = True,
 ) -> "SamPredictor":
     if SamPredictor is None or sam_model_registry is None:
         raise RuntimeError("segment-anything is not installed. Install it from PyPI.")
@@ -55,9 +85,11 @@ def build_sam_predictor(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    checkpoint = Path(checkpoint_path).expanduser().resolve()
-    if not checkpoint.exists():
-        raise FileNotFoundError(f"SAM checkpoint not found: {checkpoint}")
+    checkpoint = resolve_sam_checkpoint(
+        checkpoint_path=checkpoint_path,
+        default_checkpoint_path=default_checkpoint_path,
+        download=download,
+    )
 
     sam = sam_model_registry[model_type](checkpoint=str(checkpoint)).to(device)
     predictor = SamPredictor(sam)

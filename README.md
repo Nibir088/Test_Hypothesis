@@ -112,6 +112,21 @@ python -m src.experiments --stage train --root . --download --model-checkpoint c
 
 This will save one composite image per sample in the `training_progress/` directory, showing the original image, the mask, and the intermediate refinement outputs for each step (for example, `sample_0000_progress.png`).
 
+### Run the SAM-style point refinement loop
+
+The refinement stage now uses a point prompt and passes it directly to a SAM-style predictor to generate a mask, then scores that mask against the target and iteratively updates the point for $T = 1, 2, 3, 5$.
+
+```bash
+python -m src.experiments --stage refine --root . --model-checkpoint checkpoints/simple_segmentation.pth --sample-index 0 --refine-output-dir refinement_outputs
+```
+
+This writes visualization files such as:
+
+- `refinement_outputs/refinement_T1.png`
+- `refinement_outputs/refinement_T2.png`
+- `refinement_outputs/refinement_T3.png`
+- `refinement_outputs/refinement_T5.png`
+
 ## Notes
 
 - The `src` package is import-safe and focuses on a clean experiment scaffold.

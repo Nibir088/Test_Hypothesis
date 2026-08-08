@@ -21,6 +21,7 @@ from src.oxford_pet_sam import (
     get_mask_from_target,
     load_oxford_pet_dataset,
     prepare_sam_image,
+    resolve_sam_checkpoint,
 )
 
 
@@ -184,48 +185,44 @@ def run_closed_loop_refinement(
     return {"steps": history, "final_point": point}
 
 
-def build_point_prior(mask_shape: Tuple[int, int], point: tuple[int, int], sigma: float = 0.08) -> np.ndarray:
-    height, width = mask_shape
-    y_coords = np.linspace(0, height - 1, height)
-    x_coords = np.linspace(0, width - 1, width)
-    yy, xx = np.meshgrid(y_coords, x_coords, indexing="ij")
-    distance = (xx - point[0]) ** 2 + (yy - point[1]) ** 2
-    scale = max(height, width) * sigma
-    prior = np.exp(-distance / (2.0 * scale * scale))
-    return prior / prior.max()
-
-
-def generate_prompted_mask(
-    model: torch.nn.Module,
+def generate_sam_mask(
+    predictor: object,
     image: Image.Image,
     point: tuple[int, int],
-    device: str,
 ) -> np.ndarray:
-    transform = build_image_transform()
-    input_tensor = transform(image).unsqueeze(0).to(device)
-    with torch.no_grad():
-        logits = model(input_tensor)
-        probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
+    if predictor is None:
+        height, width = IMAGE_SIZE
+        mask = np.zeros((height, width), dtype=np.uint8)
+        radius = 12
+        y0 = max(0, min(height - 1, point[1]))
+        x0 = max(0, min(width - 1, point[0]))
+        yy, xx = np.ogrid[:height, :width]
+        mask[(yy - y0) ** 2 + (xx - x0) ** 2 <= radius * radius] = 1
+        return mask
 
-    prior = build_point_prior(probs.shape, point)
-    combined = probs * prior
-    return (combined > 0.5).astype(np.uint8)
+    image_np = prepare_sam_image(image)
+    predictor.set_image(image_np)
+    point_input = np.array([[point[0], point[1]]], dtype=np.float32)
+    masks, scores, _ = predictor.predict(point_coords=point_input, point_labels=np.array([1]), multimask_output=True)
+    if masks.size == 0:
+        return np.zeros(IMAGE_SIZE, dtype=np.uint8)
+    best_idx = int(np.argmax(scores))
+    return masks[best_idx].astype(np.uint8)
 
 
 def run_prompt_refinement_loop(
-    model: torch.nn.Module,
+    predictor: object,
     image: Image.Image,
     target_mask: np.ndarray,
     initial_point: tuple[int, int],
     max_steps: int,
-    device: str,
 ) -> dict[str, object]:
     point = initial_point
     history: list[dict[str, object]] = []
     prev_dice: Optional[float] = None
 
     for step_idx in range(1, max_steps + 1):
-        prompted_mask = generate_prompted_mask(model, image, point, device)
+        prompted_mask = generate_sam_mask(predictor, image, point)
         dice = compute_dice(prompted_mask, target_mask)
         reward = 0.0 if prev_dice is None else dice - prev_dice
         history.append({
@@ -290,13 +287,18 @@ def run_refinement_inference(
     sample_idx: int = 0,
     output_dir: str = "refinement_outputs",
 ) -> None:
-    model = build_model(device)
     checkpoint_path = Path(model_checkpoint).expanduser().resolve()
-    if checkpoint_path.exists():
-        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    else:
-        print(f"Model checkpoint not found at {checkpoint_path}; using an initialized model for refinement inference.")
-    model.eval()
+    try:
+        resolved_checkpoint = resolve_sam_checkpoint(
+            checkpoint_path=str(checkpoint_path) if checkpoint_path.exists() else None,
+            default_checkpoint_path=str(checkpoint_path),
+            download=True,
+        )
+        checkpoint_path = resolved_checkpoint
+        print(f"Using SAM checkpoint at {checkpoint_path}")
+    except FileNotFoundError as exc:
+        print(f"SAM checkpoint unavailable: {exc}")
+        checkpoint_path = None
 
     dataset = load_oxford_pet_dataset(root=root, download=False)
     image, mask = dataset[sample_idx]
@@ -310,14 +312,36 @@ def run_refinement_inference(
 
     print(f"Running refinement loop for sample {sample_idx} with initial point {initial_point}")
     for max_steps in [1, 2, 3, 5]:
-        result = run_prompt_refinement_loop(
-            model=model,
-            image=image,
-            target_mask=target_mask,
-            initial_point=initial_point,
-            max_steps=max_steps,
-            device=device,
-        )
+        if checkpoint_path is not None:
+            try:
+                predictor = build_sam_predictor(
+                    checkpoint_path=str(checkpoint_path),
+                    device=device,
+                    download=False,
+                )
+            except Exception as exc:
+                print(f"Failed to build SAM predictor: {exc}; falling back to a deterministic prompt mask.")
+                predictor = None
+        else:
+            predictor = None
+            print("SAM checkpoint unavailable; using a fallback point-guided mask update.")
+
+        if predictor is not None:
+            result = run_prompt_refinement_loop(
+                predictor=predictor,
+                image=image,
+                target_mask=target_mask,
+                initial_point=initial_point,
+                max_steps=max_steps,
+            )
+        else:
+            result = run_prompt_refinement_loop(
+                predictor=None,
+                image=image,
+                target_mask=target_mask,
+                initial_point=initial_point,
+                max_steps=max_steps,
+            )
         final_dice = result["steps"][-1]["dice"]
         print(f"T={max_steps} -> final_dice={final_dice:.4f} final_point={result['final_point']}")
         save_refinement_loop_plot(
