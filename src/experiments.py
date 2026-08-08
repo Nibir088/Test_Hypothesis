@@ -363,6 +363,131 @@ def run_refinement_inference(
         print(f"Saved refinement visualization to {output_path / f'refinement_T{max_steps}.png'}")
 
 
+def run_point_reward_landscape(
+    root: str,
+    sam_checkpoint: Optional[str],
+    device: str,
+    output_dir: str = "landscape_outputs",
+    num_samples: int = 20,
+    best_of_k: int = 20,
+    grid_stride: int = 16,
+    random_samples: int = 30,
+) -> None:
+    """Compute point->Dice landscape using SAM and evaluate baselines.
+
+    Produces per-sample heatmaps and an aggregate CSV of baseline scores.
+    """
+    out_path = Path(output_dir).expanduser().resolve()
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    dataset = load_oxford_pet_dataset(root=root, download=False)
+    total = min(num_samples, len(dataset))
+
+    # build predictor if available
+    predictor = None
+    if sam_checkpoint:
+        try:
+            predictor = build_sam_predictor(checkpoint_path=sam_checkpoint, device=device, download=False)
+            print(f"Built SAM predictor from {sam_checkpoint}")
+        except Exception as exc:
+            print(f"Could not build SAM predictor: {exc}; falling back to deterministic masks.")
+            predictor = None
+
+    records = []
+    for idx in range(total):
+        image, mask = dataset[idx]
+        target_mask = (np.array(mask) == 1).astype(np.uint8)
+        if target_mask.shape != (IMAGE_SIZE[0], IMAGE_SIZE[1]):
+            target_mask = np.array(Image.fromarray(target_mask).resize(IMAGE_SIZE, Image.NEAREST)) > 0
+        # Baseline points
+        center_pt = (IMAGE_SIZE[1] // 2, IMAGE_SIZE[0] // 2)
+        centroid_pt = get_selected_point(target_mask)
+
+        # Evaluate center and centroid
+        center_mask = generate_sam_mask(predictor, image, center_pt)
+        centroid_mask = generate_sam_mask(predictor, image, centroid_pt)
+        center_dice = compute_dice(center_mask, target_mask)
+        centroid_dice = compute_dice(centroid_mask, target_mask)
+
+        # Best-of-K random sampling
+        best_dice = -1.0
+        best_point = None
+        for k in range(best_of_k):
+            rx = int(np.random.randint(0, IMAGE_SIZE[1]))
+            ry = int(np.random.randint(0, IMAGE_SIZE[0]))
+            pmask = generate_sam_mask(predictor, image, (rx, ry))
+            d = compute_dice(pmask, target_mask)
+            if d > best_dice:
+                best_dice = d
+                best_point = (rx, ry)
+
+        # Random baseline (average over random_samples)
+        rnd_scores = []
+        for _ in range(random_samples):
+            rx = int(np.random.randint(0, IMAGE_SIZE[1]))
+            ry = int(np.random.randint(0, IMAGE_SIZE[0]))
+            pm = generate_sam_mask(predictor, image, (rx, ry))
+            rnd_scores.append(compute_dice(pm, target_mask))
+        random_mean = float(np.mean(rnd_scores))
+
+        # Compute coarse grid heatmap
+        xs = list(range(0, IMAGE_SIZE[1], grid_stride))
+        ys = list(range(0, IMAGE_SIZE[0], grid_stride))
+        heat = np.zeros((len(ys), len(xs)), dtype=float)
+        for yi, y in enumerate(ys):
+            for xi, x in enumerate(xs):
+                pm = generate_sam_mask(predictor, image, (x, y))
+                heat[yi, xi] = compute_dice(pm, target_mask)
+
+        # Save per-sample figure
+        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+        ax[0].imshow(image)
+        ax[0].set_title(f"Image #{idx}")
+        ax[0].axis("off")
+        ax[0].scatter(center_pt[0], center_pt[1], color="yellow", s=60, marker="x")
+        ax[0].text(center_pt[0] + 4, center_pt[1] - 4, f"C {center_pt}", color="yellow", fontsize=8)
+        ax[0].scatter(centroid_pt[0], centroid_pt[1], color="red", s=60, marker="x")
+        ax[0].text(centroid_pt[0] + 4, centroid_pt[1] - 4, f"O {centroid_pt}", color="red", fontsize=8)
+        if best_point is not None:
+            ax[0].scatter(best_point[0], best_point[1], color="green", s=60, marker="x")
+            ax[0].text(best_point[0] + 4, best_point[1] - 4, f"B {best_point}", color="green", fontsize=8)
+
+        ax[1].imshow(target_mask, cmap="gray")
+        ax[1].set_title("GT mask")
+        ax[1].axis("off")
+
+        im = ax[2].imshow(image)
+        ax[2].imshow(np.kron(heat, np.ones((grid_stride, grid_stride))), cmap="jet", alpha=0.5, extent=(0, IMAGE_SIZE[1], IMAGE_SIZE[0], 0))
+        ax[2].set_title("Coarse Dice heatmap (grid)")
+        ax[2].axis("off")
+
+        fig.suptitle(f"Landscape sample {idx}: center={center_dice:.3f}, oracle={centroid_dice:.3f}, bestK={best_dice:.3f}, rnd={random_mean:.3f}")
+        fig_path = out_path / f"landscape_sample_{idx:04d}.png"
+        fig.savefig(fig_path, dpi=150)
+        plt.close(fig)
+
+        records.append({
+            "idx": idx,
+            "center": float(center_dice),
+            "oracle": float(centroid_dice),
+            "bestK": float(best_dice),
+            "random_mean": float(random_mean),
+        })
+
+        print(f"Saved landscape for sample {idx} -> {fig_path}")
+
+    # aggregate
+    import csv
+    csv_path = out_path / "landscape_summary.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["idx", "center", "oracle", "bestK", "random_mean"])
+        writer.writeheader()
+        for r in records:
+            writer.writerow(r)
+
+    print(f"Saved landscape summary to {csv_path}")
+
+
 def get_selected_point(mask: np.ndarray) -> tuple[int, int]:
     foreground = np.argwhere(mask > 0)
     if foreground.size == 0:
@@ -505,7 +630,7 @@ def run_eval(root: str, download: bool, model_checkpoint: str, device: str) -> N
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Oxford Pet + SAM experiment scaffold.")
-    parser.add_argument("--stage", choices=["sanity", "train", "eval", "refine"], required=True)
+    parser.add_argument("--stage", choices=["sanity", "train", "eval", "refine", "landscape"], required=True)
     parser.add_argument("--root", type=str, required=True, help="Project root containing the dataset directories.")
     parser.add_argument("--checkpoint", type=str, default="", help="Path to a SAM checkpoint for sanity or inference.")
     parser.add_argument("--model-checkpoint", type=str, default=MODEL_CHECKPOINT, help="Path to save or load the segmentation model weights.")
@@ -514,6 +639,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-dir", type=str, default="training_progress", help="Directory to save epoch-wise sample prediction snapshots during training.")
     parser.add_argument("--refine-output-dir", type=str, default="refinement_outputs", help="Directory to save per-step refinement visualizations for T=1,2,3,5.")
     parser.add_argument("--sample-index", type=int, default=0, help="Dataset sample index to use for the refinement inference loop.")
+    parser.add_argument("--landscape-samples", type=int, default=20, help="Number of samples to run for the point-reward landscape baseline.")
     return parser.parse_args()
 
 
@@ -544,6 +670,14 @@ def main() -> None:
             sample_idx=args.sample_index,
             output_dir=args.refine_output_dir,
             sam_checkpoint=args.checkpoint or None,
+        )
+    elif args.stage == "landscape":
+        run_point_reward_landscape(
+            root=str(root_path),
+            sam_checkpoint=args.checkpoint or None,
+            device=args.device,
+            output_dir=args.refine_output_dir,
+            num_samples=args.landscape_samples,
         )
 
 
