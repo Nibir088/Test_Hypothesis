@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -155,6 +156,17 @@ def evaluate_model(model: torch.nn.Module, loader: DataLoader, criterion: nn.Mod
     return avg_loss, avg_iou
 
 
+def get_selected_point(mask: np.ndarray) -> tuple[int, int]:
+    foreground = np.argwhere(mask > 0)
+    if foreground.size == 0:
+        h, w = mask.shape
+        return w // 2, h // 2
+    ys, xs = foreground[:, 0], foreground[:, 1]
+    center_y = int(round(float(ys.mean())))
+    center_x = int(round(float(xs.mean())))
+    return center_x, center_y
+
+
 def save_training_progress_samples(
     model: torch.nn.Module,
     root: str,
@@ -165,9 +177,15 @@ def save_training_progress_samples(
 ) -> None:
     model.eval()
     dataset = load_oxford_pet_dataset(root=root, download=False)
-    save_dir = Path(output_dir).expanduser().resolve() / f"epoch_{epoch:02d}"
+    save_dir = Path(output_dir).expanduser().resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
+    history_path = save_dir / "progress_history.pkl"
     transform = build_image_transform()
+
+    history: dict[str, list[dict[str, object]]] = {}
+    if history_path.exists():
+        with history_path.open("rb") as handle:
+            history = pickle.load(handle)
 
     with torch.no_grad():
         for idx in sample_indices:
@@ -179,23 +197,46 @@ def save_training_progress_samples(
             probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
             predicted_mask = (probs > 0.5).astype(np.uint8)
             gt_mask = (np.array(mask) == 1).astype(np.uint8)
+            selected_point = get_selected_point(gt_mask)
 
-            fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-            ax[0].imshow(image)
-            ax[0].set_title(f"Image #{idx}")
-            ax[0].axis("off")
-            ax[1].imshow(gt_mask, cmap="gray")
-            ax[1].set_title("Ground truth")
-            ax[1].axis("off")
-            ax[2].imshow(predicted_mask, cmap="gray")
-            ax[2].set_title("Predicted mask")
-            ax[2].axis("off")
+            sample_history = history.setdefault(str(idx), [])
+            sample_history.append({"epoch": epoch, "predicted_mask": predicted_mask})
+
+            figure_height = max(3, len(sample_history) * 3)
+            fig, axes = plt.subplots(len(sample_history), 3, figsize=(12, figure_height))
+            if len(sample_history) == 1:
+                axes = np.expand_dims(axes, axis=0)
+
+            for row, entry in enumerate(sample_history):
+                row_epoch = int(entry["epoch"])
+                row_pred = entry["predicted_mask"]
+                axes[row, 0].imshow(image)
+                axes[row, 0].set_title(f"Epoch {row_epoch} - Image #{idx}")
+                axes[row, 0].axis("off")
+                axes[row, 0].scatter(selected_point[0], selected_point[1], color="red", s=70, marker="x", linewidths=2)
+                axes[row, 0].text(
+                    selected_point[0] + 3,
+                    selected_point[1] - 3,
+                    f"({selected_point[0]},{selected_point[1]})",
+                    color="white",
+                    fontsize=8,
+                    bbox={"boxstyle": "round,pad=0.2", "facecolor": "red", "alpha": 0.7},
+                )
+                axes[row, 1].imshow(gt_mask, cmap="gray")
+                axes[row, 1].set_title("Ground truth")
+                axes[row, 1].axis("off")
+                axes[row, 2].imshow(row_pred, cmap="gray")
+                axes[row, 2].set_title(f"Predicted mask (epoch {row_epoch})")
+                axes[row, 2].axis("off")
+
             plt.tight_layout()
-
-            sample_path = save_dir / f"epoch{epoch:02d}_sample{idx:04d}.png"
+            sample_path = save_dir / f"sample_{idx:04d}_progress.png"
             fig.savefig(sample_path, dpi=150)
             plt.close(fig)
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Saved epoch {epoch} sample {idx} to {sample_path}")
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Updated single-image progress view for sample {idx} at {sample_path}")
+
+    with history_path.open("wb") as handle:
+        pickle.dump(history, handle)
 
 
 def run_train(root: str, download: bool, checkpoint: str, model_checkpoint: str, device: str, progress_dir: str = "training_progress") -> None:
@@ -206,6 +247,10 @@ def run_train(root: str, download: bool, checkpoint: str, model_checkpoint: str,
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     print(f"Training on device={device} with {len(train_loader.dataset)} train samples and {len(val_loader.dataset)} val samples.")
+
+    history_path = Path(progress_dir).expanduser().resolve() / "progress_history.pkl"
+    if history_path.exists():
+        history_path.unlink()
 
     for epoch in range(1, NUM_EPOCHS + 1):
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
