@@ -47,6 +47,7 @@ def visualize_samples(
     num_samples: int = 3,
     start_index: int = 0,
     save_path: str = "visualization.png",
+    output_dir: str = "visualization_outputs",
 ) -> None:
     root_path = Path(root).expanduser().resolve()
     dataset = load_oxford_pet_dataset(
@@ -55,6 +56,9 @@ def visualize_samples(
         transform=lambda image: image.convert("RGB"),
         target_transform=lambda mask: Image.fromarray(np.array(mask)),
     )
+
+    output_path = Path(output_dir).expanduser().resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
 
     model = SimpleSegmentationNet(num_classes=1)
     checkpoint_path = Path(model_checkpoint).expanduser().resolve()
@@ -92,9 +96,26 @@ def visualize_samples(
             axes[row, 2].set_title("Predicted mask")
             axes[row, 2].axis("off")
 
+            single_path = output_path / f"sample_{idx:04d}.png"
+            fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+            ax[0].imshow(image)
+            ax[0].set_title(f"Image #{idx}")
+            ax[0].axis("off")
+            ax[1].imshow(gt_mask, cmap="gray")
+            ax[1].set_title("Ground truth")
+            ax[1].axis("off")
+            ax[2].imshow(prediction, cmap="gray")
+            ax[2].set_title("Predicted mask")
+            ax[2].axis("off")
+            plt.tight_layout()
+            fig.savefig(single_path, dpi=150)
+            plt.close(fig)
+            print(f"Saved per-sample visualization to {single_path}")
+
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
-    print(f"Saved visualization to {save_path}")
+    print(f"Saved combined visualization to {save_path}")
+    print(f"Saved per-sample outputs to {output_path}")
     try:
         plt.show()
     except Exception:
@@ -108,7 +129,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=get_default_device(), help="Device for model inference.")
     parser.add_argument("--num-samples", type=int, default=3, help="Number of samples to visualize.")
     parser.add_argument("--start-index", type=int, default=0, help="Start index for the dataset samples.")
-    parser.add_argument("--save-path", type=str, default="visualization.png", help="Path to save the visualization figure.")
+    parser.add_argument("--save-path", type=str, default="visualization.png", help="Path to save the combined visualization figure.")
+    parser.add_argument("--output-dir", type=str, default="visualization_outputs", help="Directory to save each sample output image.")
     return parser.parse_args()
 
 
@@ -120,7 +142,8 @@ def main() -> None:
         device=args.device,
         num_samples=args.num_samples,
         start_index=args.start_index,
-        save_path=args.save_path or None,
+        save_path=args.save_path,
+        output_dir=args.output_dir,
     )
 
 
