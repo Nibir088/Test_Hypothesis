@@ -266,7 +266,15 @@ def save_refinement_loop_plot(
         axes[row, 0].imshow(image)
         axes[row, 0].set_title(f"Step {entry['step']} - Image")
         axes[row, 0].axis("off")
-        axes[row, 0].scatter(point[0], point[1], color="red", s=60, marker="x", linewidths=2)
+        axes[row, 0].scatter(point[0], point[1], color="red", s=80, marker="x", linewidths=2)
+        axes[row, 0].text(
+            point[0] + 5,
+            point[1] - 5,
+            f"({point[0]}, {point[1]})",
+            color="red",
+            fontsize=9,
+            bbox={"facecolor": "white", "alpha": 0.7, "pad": 1, "edgecolor": "none"},
+        )
         axes[row, 1].imshow(target_mask, cmap="gray")
         axes[row, 1].set_title("Mask")
         axes[row, 1].axis("off")
